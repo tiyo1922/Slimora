@@ -1,7 +1,3 @@
-APP_VERSION = "1.1"
-UPDATE_URL = "https://github.com/username/image-app/releases/download/v1.2/ImageApp_v1.2.exe"
-VERSION_URL = "https://github.com/username/image-app/releases/download/v1.2/version.txt"
-
 import os
 import sys
 import shutil
@@ -9,7 +5,7 @@ import ctypes
 import requests
 import tempfile
 import threading
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFontDatabase, QFont
 from PySide6.QtCore import QUrl
 
 from PIL import Image, ImageOps
@@ -25,79 +21,113 @@ from PySide6.QtCore import Qt, QTimer, QMimeData, QThread, Signal, QObject
 from PySide6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QColor, QPalette, QIcon
 from PySide6.QtWidgets import QStyle
 
-# === Styling Constants ===
+def resource_path(relative_path):
+    """Mendapatkan path absolut (support saat dijalankan via PyInstaller)"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+# ===== CONFIGURATION =====
+DEV_MODE = False  # Set to False for production
+APP_VERSION = "1.1"
+UPDATE_URL = "https://github.com/tiyo1922/Slimora/releases/download/v1.1/Setup.exe"
+VERSION_URL = "https://github.com/tiyo1922/Slimora/releases/download/v1.1/version.txt"
+
+# ===== STYLING CONSTANTS =====
 ACTIVE_COLOR = "#3A3A5A"
 HOVER_COLOR = "white"
 DEFAULT_COLOR = "transparent"
-TEXT_COLOR = "#ffd465"
+TEXT_COLOR = "#333333"  # Changed to darker color for better visibility
 ACTIVE_TEXT_COLOR = "white"
 FONT_SIZE = "14px"
 
-BUTTON_STYLE = """
-    QPushButton {
-        background-color: #3A3A5A;
-        color: white;
-        border-radius: 10px;
-        font-size: 14px;
-        padding: 10px 15px;
-        min-width: 100px;
-    }
-    QPushButton:hover {
-        background-color: #555;
-    }
-    QPushButton:pressed {
-        background-color: #333;
-    }
+BASE_STYLE = f"""
+    * {{
+        font-family: "Segoe UI", Arial, sans-serif;
+        color: {TEXT_COLOR};
+    }}
+    QLabel {{
+        color: {TEXT_COLOR};
+    }}
 """
 
-DRAG_DROP_STYLE = """
-    QFrame {
+BUTTON_STYLE = f"""
+    QPushButton {{
+        background-color: {ACTIVE_COLOR};
+        color: white;
+        border-radius: 10px;
+        font-size: {FONT_SIZE};
+        padding: 10px 15px;
+        min-width: 100px;
+    }}
+    QPushButton:hover {{
+        background-color: #555;
+    }}
+    QPushButton:pressed {{
+        background-color: #333;
+    }}
+"""
+
+DRAG_DROP_STYLE = f"""
+    QFrame {{
         border: 2px dashed rgba(170, 170, 170, 0.5);
         border-radius: 10px;
         background-color: rgba(249, 249, 249, 0.3);
         padding: 20px;
-    }
-    QFrame:hover {
+    }}
+    QFrame:hover {{
         background-color: rgba(240, 240, 240, 0.5);
         border: 2px dashed rgba(170, 170, 170, 0.8);
-    }
-    QLabel {
-        color: rgba(0, 0, 0, 0.6);
-    }
+    }}
+    QLabel {{
+        color: {TEXT_COLOR};
+    }}
 """
 
-SPINBOX_STYLE = """
-    QSpinBox {
+SPINBOX_STYLE = f"""
+    QSpinBox {{
         border-radius: 10px;
         padding: 8px;
         background-color: white;
+        color: black;
         border: 1px solid #ccc;
         min-width: 80px;
-    }
-    QSpinBox::up-button, QSpinBox::down-button {
+    }}
+    QSpinBox::up-button, QSpinBox::down-button {{
         background: #f0f0f0;
         border-left: 1px solid #ccc;
         width: 20px;
-    }
-    QSpinBox::up-button {
+    }}
+    QSpinBox::up-button {{
         subcontrol-position: top right;
         border-bottom: 1px solid #ccc;
         border-top-right-radius: 10px;
-    }
-    QSpinBox::down-button {
+    }}
+    QSpinBox::down-button {{
         subcontrol-position: bottom right;
         border-bottom-right-radius: 10px;
-    }
-    QSpinBox::up-arrow {
+    }}
+    QSpinBox::up-arrow {{
+        image: url(:/qt-project.org/styles/commonstyle/images/up-16.png);
         width: 10px;
         height: 10px;
-        image: url(:/qt-project.org/styles/commonstyle/images/up-arrow.png);
-    }
-    QSpinBox::down-arrow {
+    }}
+    QSpinBox::down-arrow {{
+        image: url(:/qt-project.org/styles/commonstyle/images/down-16.png);
         width: 10px;
         height: 10px;
-        image: url(:/qt-project.org/styles/commonstyle/images/down-arrow.png);
-    }
+    }}
+"""
+
+LOG_STYLE = f"""
+    QTextEdit {{
+        background-color: white;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        padding: 8px;
+        color: {TEXT_COLOR};
+        font-family: "Consolas", monospace;
+    }}
 """
 
 class DragDropWidget(QFrame):
@@ -138,41 +168,33 @@ class DragDropWidget(QFrame):
 class ImageProcessor:
     @staticmethod
     def process_images(files, input_dir, max_kb, quality, folder_mode, progress_callback=None):
-        """Proses utama untuk kompresi dan rename gambar"""
         results = []
         total_files = len(files)
         
         for idx, file_path in enumerate(files):
             try:
-                # Ekstrak informasi path
                 dirname = os.path.dirname(file_path)
                 filename = os.path.basename(file_path)
                 rel_path = os.path.relpath(dirname, input_dir)
                 
-                # Tentukan prefix berdasarkan mode
                 if folder_mode == "multiple":
-                    # Untuk multiple folder, gunakan nama level1 folder sebagai prefix
                     level1_folder = rel_path.split(os.sep)[0] if rel_path else ""
                     prefix = level1_folder
                     reduced_base = os.path.join(input_dir, level1_folder, "reduced")
                     rel_output_path = os.path.relpath(dirname, os.path.join(input_dir, level1_folder))
-                else:  # single folder
-                    # Untuk single folder, gunakan nama folder utama sebagai prefix
+                else:
                     prefix = os.path.basename(os.path.normpath(input_dir))
                     reduced_base = os.path.join(input_dir, "reduced")
                     rel_output_path = rel_path
                 
-                # Generate nama file baru
                 new_filename = f"{prefix}_{filename}" if prefix else filename
                 if not filename.lower().endswith(".jpg"):
                     new_filename = os.path.splitext(new_filename)[0] + ".jpg"
                 
-                # Buat direktori output
                 output_dir = os.path.join(reduced_base, rel_output_path)
                 os.makedirs(output_dir, exist_ok=True)
                 output_path = os.path.join(output_dir, new_filename)
                 
-                # Kompresi gambar
                 original_size = os.path.getsize(file_path)
                 success = ImageProcessor.compress_image(file_path, output_path, max_kb, quality)
                 
@@ -192,34 +214,26 @@ class ImageProcessor:
                     if progress_callback:
                         progress_callback(idx + 1, total_files, f"{filename} → {new_filename}")
                 else:
-                    results.append({
-                        'error': f"Failed to process {filename}"
-                    })
+                    results.append({'error': f"Failed to process {filename}"})
                     
             except Exception as e:
-                results.append({
-                    'error': f"Error processing {filename}: {str(e)}"
-                })
+                results.append({'error': f"Error processing {filename}: {str(e)}"})
                 continue
         
         return results
 
     @staticmethod
     def compress_image(input_path, output_path, max_kb=150, quality=85, max_width=1024):
-        """Kompresi gambar dengan ukuran maksimal"""
         try:
             with Image.open(input_path) as img:
-                # Konversi ke RGB jika perlu
                 if img.mode in ('CMYK', 'LA', 'RGBA'):
                     img = img.convert('RGB')
                 
-                # Resize jika melebihi max_width
                 if img.width > max_width:
                     ratio = max_width / img.width
                     new_height = int(img.height * ratio)
                     img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
                 
-                # Optimasi ukuran dengan iterasi di memory
                 buffer = BytesIO()
                 optimized = False
                 
@@ -231,7 +245,6 @@ class ImageProcessor:
                         size_kb = buffer.tell() / 1024
                         
                         if size_kb <= max_kb:
-                            # Jika memenuhi, simpan ke file final
                             with open(output_path, 'wb') as f:
                                 f.write(buffer.getvalue())
                             optimized = True
@@ -241,7 +254,6 @@ class ImageProcessor:
                         continue
                 
                 if not optimized:
-                    # Jika tidak berhasil optimasi, simpan dengan quality terendah
                     img.save(output_path, format='JPEG', quality=30, optimize=True)
                 
                 return True
@@ -251,8 +263,8 @@ class ImageProcessor:
             return False
 
 class ImageWorker(QObject):
-    progress = Signal(int, int, str)  # (current, total, message)
-    result = Signal(dict)             # result dictionary
+    progress = Signal(int, int, str)
+    result = Signal(dict)
     finished = Signal()
     
     def __init__(self, files, input_dir, max_kb, quality, folder_mode, prefix=""):
@@ -276,15 +288,12 @@ class ImageWorker(QObject):
                         break
                         
                     try:
-                        # Ekstrak informasi file
                         dirname = os.path.dirname(file_path)
                         filename = os.path.basename(file_path)
                         
-                        # Buat folder reduced
                         reduced_path = os.path.join(dirname, "reduced")
                         os.makedirs(reduced_path, exist_ok=True)
                         
-                        # Generate nama file baru dengan prefix
                         name, ext = os.path.splitext(filename)
                         new_filename = f"{self.prefix}_{filename}" if self.prefix else filename
                         if ext.lower() not in ('.jpg', '.jpeg'):
@@ -292,7 +301,6 @@ class ImageWorker(QObject):
                         
                         output_path = os.path.join(reduced_path, new_filename)
                         
-                        # Kompresi gambar
                         original_size = os.path.getsize(file_path)
                         success = ImageProcessor.compress_image(file_path, output_path, self.max_kb, self.quality)
                         
@@ -311,14 +319,10 @@ class ImageWorker(QObject):
                             
                             self.progress.emit(idx + 1, total_files, f"{filename} → {new_filename}")
                         else:
-                            results.append({
-                                'error': f"Failed to process {filename}"
-                            })
+                            results.append({'error': f"Failed to process {filename}"})
                             
                     except Exception as e:
-                        results.append({
-                            'error': f"Error processing {filename}: {str(e)}"
-                        })
+                        results.append({'error': f"Error processing {filename}: {str(e)}"})
                         continue
             else:
                 results = ImageProcessor.process_images(
@@ -355,7 +359,7 @@ class ImageWorker(QObject):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Image Processor")
+        self.setWindowTitle(f"Slimora v1.1 {'(DEV MODE)' if DEV_MODE else ''}")
         self.setMinimumSize(900, 650)
         self.file_paths = []
         self.current_file_index = 0
@@ -363,51 +367,17 @@ class MainWindow(QWidget):
         self.worker = None
         self.worker_thread = None
 
-        # Update APP
-        QTimer.singleShot(1000, self.check_for_update)  # Tambahkan ini di akhir __init__
-
-    def check_for_update(self):
-        try:
-            r = requests.get(VERSION_URL, timeout=5)
-            latest_version = r.text.strip()
-            if latest_version > APP_VERSION:
-                reply = QMessageBox.question(
-                    self,
-                    "Update Tersedia",
-                    f"Aplikasi versi {latest_version} tersedia.\nIngin update sekarang?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                if reply == QMessageBox.Yes:
-                    self.download_update()
-        except Exception as e:
-            print(f"Gagal cek update: {e}")
-
-    def download_update(self):
-        save_path = os.path.join(tempfile.gettempdir(), "ImageApp_Update.exe")
-
-        def _download():
-            try:
-                r = requests.get(UPDATE_URL, stream=True)
-                total = int(r.headers.get("content-length", 0))
-                downloaded = 0
-
-                with open(save_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-
-                QMessageBox.information(self, "Download Selesai", f"File update berhasil diunduh.\nLokasi: {save_path}")
-                os.startfile(save_path)  # Jalankan updater
-                QApplication.quit()
-            except Exception as e:
-                QMessageBox.critical(self, "Gagal Download", f"Terjadi kesalahan saat mengunduh update:\n{str(e)}")
-
-        threading.Thread(target=_download).start()
-
-        # Force light palette to prevent dark mode
+        # Initialize UI
+        self.init_ui()
+        
+        # Set palette and fonts
         self.set_light_palette()
+        
+        # Check for updates
+        if not DEV_MODE:
+            QTimer.singleShot(1000, self.check_for_update)
 
+    def init_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
@@ -416,13 +386,43 @@ class MainWindow(QWidget):
         sidebar_layout.setContentsMargins(5, 20, 5, 5)
         sidebar_layout.setSpacing(10)
 
+        # Set window icon
+        icon_path = resource_path("slimora.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            print(f"Icon file not found: {icon_path}")
+            self.setWindowIcon(self.style().standardIcon(QStyle.SP_DesktopIcon))
+
+        
         # Logo
         logo_label = QLabel()
-        logo_pixmap = QPixmap("logo.png").scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        logo_label.setPixmap(logo_pixmap)
+        try:
+            logo_pixmap = QPixmap(resource_path("logo.png"))
+            if not logo_pixmap.isNull():
+                logo_pixmap = logo_pixmap.scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                logo_label.setPixmap(logo_pixmap)
+            else:
+                print("Warning: Logo image not loaded")
+        except Exception as e:
+            print(f"Error loading logo: {e}")
+        
         logo_label.setAlignment(Qt.AlignCenter)
         logo_label.setObjectName("logo_label")
         sidebar_layout.addWidget(logo_label)
+        
+        # DEV MODE Indicator
+        if DEV_MODE:
+            dev_label = QLabel("🔧 DEV MODE BETA")
+            dev_label.setStyleSheet("""
+                color: red;
+                font-weight: bold;
+                background-color: #FFEEEE;
+                padding: 3px;
+                border-radius: 5px;
+            """)
+            dev_label.setAlignment(Qt.AlignCenter)
+            sidebar_layout.addWidget(dev_label)
 
         # Tab Buttons
         self.buttons = []
@@ -447,7 +447,15 @@ class MainWindow(QWidget):
                 folder_layout = QHBoxLayout()
                 folder_input = QLineEdit()
                 folder_input.setPlaceholderText("Select main folder..." if name == "Multiple Folder" else "Select folder...")
-                folder_input.setStyleSheet("border-radius: 10px; padding: 8px; background-color: white; border: 1px solid #ccc;")
+                folder_input.setStyleSheet("""
+                    QLineEdit {
+                        border-radius: 10px;
+                        padding: 8px;
+                        background-color: white;
+                        color: black;
+                        border: 1px solid #ccc;
+                    }
+                """)
                 browse_btn = QPushButton("Browse")
                 browse_btn.setFixedWidth(80)
                 browse_btn.setStyleSheet(BUTTON_STYLE)
@@ -465,14 +473,16 @@ class MainWindow(QWidget):
                 self.file_counter.setAlignment(Qt.AlignCenter)
                 group_layout.addWidget(self.file_counter)
             elif name == "Video":
-                # Simple "COMING SOON" message for Video tab
                 coming_soon = QLabel("COMING SOON")
                 coming_soon.setAlignment(Qt.AlignCenter)
-                coming_soon.setStyleSheet("font-size: 24px; font-weight: bold; color: #3A3A5A;")
+                coming_soon.setStyleSheet("""
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #3A3A5A;
+                """)
                 group_layout.addWidget(coming_soon)
                 group_layout.addStretch()
 
-            # Only add controls for non-Video tabs
             if name != "Video":
                 # Max Size
                 max_size_layout = QHBoxLayout()
@@ -519,15 +529,7 @@ class MainWindow(QWidget):
                 # Log Output
                 log_output = QTextEdit()
                 log_output.setReadOnly(True)
-                log_output.setStyleSheet("""
-                    QTextEdit {
-                        border-radius: 10px;
-                        background-color: white;
-                        padding: 8px;
-                        font-family: Consolas, monospace;
-                        border: 1px solid #ccc;
-                    }
-                """)
+                log_output.setStyleSheet(LOG_STYLE)
 
                 # Progress Bar
                 progress_bar = QProgressBar()
@@ -550,14 +552,12 @@ class MainWindow(QWidget):
                 # Buttons
                 button_container = QHBoxLayout()
                 
-                # Start Button
                 start_btn = QPushButton("START 🚀")
                 start_btn.setFixedHeight(40)
                 start_btn.setStyleSheet(BUTTON_STYLE)
                 start_btn.setCursor(Qt.PointingHandCursor)
                 start_btn.clicked.connect(lambda _, n=name: self.toggle_process(n))
                 
-                # Stop/Done Button
                 stop_done_btn = QPushButton("STOP ⛔")
                 stop_done_btn.setFixedHeight(40)
                 stop_done_btn.setStyleSheet("""
@@ -572,7 +572,7 @@ class MainWindow(QWidget):
                         background-color: #FF0000;
                     }
                     QPushButton:disabled {
-                        background-color: #4CAF50;
+                        background-color: #CFD8DC;
                         color: white;
                     }
                 """)
@@ -580,7 +580,6 @@ class MainWindow(QWidget):
                 stop_done_btn.clicked.connect(lambda _, n=name: self.toggle_process(n))
                 stop_done_btn.setVisible(False)
                 
-                # Reset Button
                 reset_btn = QPushButton("RESET ♻️")
                 reset_btn.setFixedHeight(40)
                 reset_btn.setStyleSheet("""
@@ -600,13 +599,11 @@ class MainWindow(QWidget):
                 reset_btn.setVisible(False)
                 reset_btn.setEnabled(False)
                 
-                # Button Container
                 button_container.addWidget(start_btn)
                 button_container.addWidget(stop_done_btn)
                 button_container.addWidget(reset_btn)
                 button_container.setSpacing(10)
 
-                # Layout Assembly
                 if name != "File":
                     group_layout.addSpacing(10)
                 group_layout.addLayout(max_size_layout)
@@ -619,7 +616,6 @@ class MainWindow(QWidget):
                 group_layout.addSpacing(10)
                 group_layout.addWidget(progress_bar)
 
-            # Store components
             self.tabs[name] = {
                 'group': group,
                 'log_output': log_output if name != "Video" else None,
@@ -689,7 +685,6 @@ class MainWindow(QWidget):
         self.switch_tab(0)
 
     def set_light_palette(self):
-        """Force light color palette regardless of system theme"""
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(240, 240, 240))
         palette.setColor(QPalette.WindowText, QColor(0, 0, 0))
@@ -706,19 +701,49 @@ class MainWindow(QWidget):
         palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
         QApplication.setPalette(palette)
 
-    def __del__(self):
-        """Cleanup thread saat window dihancurkan"""
-        if hasattr(self, 'worker_thread') and self.worker_thread:
-            if self.worker_thread.isRunning():
-                self.worker_thread.quit()
-                self.worker_thread.wait(500)  # Timeout 500ms
+    def check_for_update(self):
+        try:
+            r = requests.get(VERSION_URL, timeout=5)
+            latest_version = r.text.strip()
+            if latest_version > APP_VERSION:
+                reply = QMessageBox.question(
+                    self,
+                    "Update Available",
+                    f"App version {latest_version} is available.\nUpdate now?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    self.download_update()
+        except Exception as e:
+            print(f"Update check failed: {e}")
+
+    def download_update(self):
+        save_path = os.path.join(tempfile.gettempdir(), "ImageApp_Update.exe")
+
+        def _download():
+            try:
+                r = requests.get(UPDATE_URL, stream=True)
+                total = int(r.headers.get("content-length", 0))
+                downloaded = 0
+
+                with open(save_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=1024):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+
+                QMessageBox.information(self, "Download Complete", f"Update saved to: {save_path}")
+                os.startfile(save_path)
+                QApplication.quit()
+            except Exception as e:
+                QMessageBox.critical(self, "Download Failed", f"Error: {str(e)}")
+
+        threading.Thread(target=_download).start()
 
     def is_network_path(self, path):
-        """Cek apakah path merupakan network share (hanya untuk folder tab)"""
-        if not path:  # Handle empty path
+        if not path:
             return False
             
-        # Untuk tab File, selalu return False agar bisa akses network share
         current_tab = self.stack.currentWidget().title()
         if current_tab == "File":
             return False
@@ -729,7 +754,7 @@ class MainWindow(QWidget):
         if drive:
             try:
                 drive_type = ctypes.windll.kernel32.GetDriveTypeW(drive + "\\")
-                return drive_type == 4  # DRIVE_REMOTE
+                return drive_type == 4
             except:
                 return False
         return False
@@ -740,7 +765,6 @@ class MainWindow(QWidget):
             btn.setChecked(i == index)
 
     def browse_folder(self, tab_name):
-        """Untuk Multiple/Single Folder tab"""
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select Folder",
@@ -752,8 +776,8 @@ class MainWindow(QWidget):
             if self.is_network_path(folder):
                 QMessageBox.warning(
                     self,
-                    "Akses Ditolak",
-                    "Pindah folder neng komputer dewe sek bolo",
+                    "Access Denied",
+                    "Network folders not allowed in this mode",
                     QMessageBox.Ok
                 )
                 return
@@ -763,7 +787,6 @@ class MainWindow(QWidget):
                 self.tabs[tab_name]['log_output'].append(f"📂 Selected folder: {folder}")
 
     def browse_files(self):
-        """Untuk File tab - bisa akses network share"""
         files, _ = QFileDialog.getOpenFileNames(
             self, 
             "Select Image Files", 
@@ -779,7 +802,6 @@ class MainWindow(QWidget):
         if self.tabs['File']['log_output']:
             self.tabs['File']['log_output'].append(f"📄 Selected {file_count} files")
         
-        # Update display
         if file_count == 1:
             self.drag_drop.label.setText(f"File selected:\n{file_paths[0].split('/')[-1]}")
         else:
@@ -794,13 +816,11 @@ class MainWindow(QWidget):
             return
             
         if tab['start_btn'].isVisible():
-            # Start process
             if tab_name == "File":
-                # Tampilkan input dialog untuk prefix
                 prefix, ok = QInputDialog.getText(
                     self,
                     "File Prefix",
-                    "Masukkan prefix untuk nama file:",
+                    "Enter filename prefix:",
                     QLineEdit.Normal,
                     ""
                 )
@@ -817,12 +837,10 @@ class MainWindow(QWidget):
                 tab['reset_btn'].setEnabled(False)
                 self.run_process(tab_name)
         else:
-            # Stop process
             if tab['stop_done_btn'].text() == "STOP":
                 self.stop_process(tab_name)
 
     def process_files_with_prefix(self, prefix):
-        """Proses khusus untuk tab File dengan prefix"""
         tab = self.tabs['File']
         max_kb = tab['max_size_input'].value()
         quality = tab['quality_input'].value()
@@ -832,7 +850,6 @@ class MainWindow(QWidget):
                 tab['log_output'].append("❌ No files selected!")
             return
             
-        # Setup UI
         tab['start_btn'].setVisible(False)
         tab['stop_done_btn'].setVisible(True)
         tab['stop_done_btn'].setText("STOP")
@@ -843,19 +860,17 @@ class MainWindow(QWidget):
         if tab['log_output']:
             tab['log_output'].append(f"🟢 Processing {len(self.file_paths)} files with prefix '{prefix}'...")
         
-        # Setup worker thread
         self.worker_thread = QThread()
         self.worker = ImageWorker(
             self.file_paths,
-            "",  # Tidak perlu input_dir untuk mode file
+            "",
             max_kb,
             quality,
-            "file",  # Mode khusus file
+            "file",
             prefix
         )
         self.worker.moveToThread(self.worker_thread)
         
-        # Connect signals
         self.worker.progress.connect(partial(self.update_progress, tab))
         self.worker.result.connect(partial(self.handle_result, tab))
         self.worker.finished.connect(self.worker_thread.quit)
@@ -863,7 +878,6 @@ class MainWindow(QWidget):
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker_thread.finished.connect(self.worker_thread.deleteLater)
         
-        # Start processing
         self.worker_thread.start()
         QTimer.singleShot(0, self.worker.process)
 
@@ -873,8 +887,6 @@ class MainWindow(QWidget):
             self.worker.stop()
         tab['stop_done_btn'].setText("DONE ✔️")
         tab['stop_done_btn'].setEnabled(False)
-        tab['reset_btn'].setEnabled(True)
-        tab['reset_btn'].setEnabled(True)
         tab['reset_btn'].setEnabled(True)
         if tab['log_output']:
             tab['log_output'].append("⏹ Processing stopped by user")
@@ -900,7 +912,6 @@ class MainWindow(QWidget):
         if tab['log_output']:
             tab['log_output'].clear()
         
-        # Reset button states
         if tab['start_btn']:
             tab['start_btn'].setVisible(True)
         if tab['stop_done_btn']:
@@ -916,17 +927,14 @@ class MainWindow(QWidget):
         
         folder_mode = "multiple" if tab_name == "Multiple Folder" else "single"
         
-        # Setup progress
         tab['progress_bar'].setValue(0)
         
-        # Dapatkan folder input
         input_dir = tab['folder_input'].text().strip()
         if not input_dir:
             if tab['log_output']:
                 tab['log_output'].append("❌ Folder not selected!")
             return
             
-        # Collect image files
         files = []
         for root, _, filenames in os.walk(input_dir):
             for f in filenames:
@@ -939,20 +947,17 @@ class MainWindow(QWidget):
                 tab['log_output'].append("❌ No valid images found!")
             return
         
-        # Setup worker thread
         self.worker_thread = QThread()
         self.worker = ImageWorker(files, input_dir, max_kb, quality, folder_mode)
         self.worker.moveToThread(self.worker_thread)
         
-        # Connect signals dengan urutan yang benar
         self.worker.progress.connect(partial(self.update_progress, tab))
         self.worker.result.connect(partial(self.handle_result, tab))
-        self.worker.finished.connect(self.worker_thread.quit)  # Ini harus pertama
+        self.worker.finished.connect(self.worker_thread.quit)
         self.worker.finished.connect(partial(self.process_completed, tab))
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker_thread.finished.connect(self.worker_thread.deleteLater)
         
-        # Start processing
         if tab['log_output']:
             tab['log_output'].append(f"🟢 Processing {total_files} files in {folder_mode} mode...")
             if folder_mode == "multiple":
